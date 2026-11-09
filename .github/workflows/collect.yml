@@ -54,9 +54,13 @@ jobs:
             const raw = Number(process.env.MAX_ITEMS || 30);
             const FOCI = ['rsi-self-verification','sandbox-isolation','self-improving-search','anti-cheat-verifier','program-synthesis'];
             const DEPTHS = ['shallow','standard','deep'];
-            if(!FOCI.includes(focus)){console.error('非法 focus:',focus);process.exit(1)}
-            if(!DEPTHS.includes(depth)){console.error('非法 depth:',depth);process.exit(1)}
-            if(!Number.isFinite(raw) || raw < 1 || raw > 50){console.error('max_items 越界:',raw);process.exit(1)}
+            // 越权输入用 exit 2，与"流程故障(exit 1)"区分开：
+            // 之前两者都是 exit 1，dashboard 上都是红色 failure，无法一眼分辨
+            // "有人传了非法参数"和"pipeline 坏了"——它们需要完全不同的处置。
+            const reject = (msg) => { console.error('::error::REJECTED_BY_WHITELIST: ' + msg); process.exit(2); };
+            if(!FOCI.includes(focus)) reject('非法 focus: ' + focus);
+            if(!DEPTHS.includes(depth)) reject('非法 depth: ' + depth);
+            if(!Number.isFinite(raw) || raw < 1 || raw > 50) reject('max_items 越界: ' + raw);
             const caps = { shallow: 10, standard: 30, deep: 50 };
             const maxItems = Math.min(raw, caps[depth]);
             const fs = require('fs');
@@ -99,7 +103,7 @@ jobs:
       - name: 硬性闸：0 条 LIVE 数据即失败（信号给 RSI，不要让它以为成功）
         if: ${{ steps.result.outputs.written == '0' || steps.result.outputs.data_source != 'LIVE' }}
         run: |
-          echo "::error::本轮采集产出 0 条 LIVE 文档（written=${{ steps.result.outputs.written }}, data_source=${{ steps.result.outputs.data_source }}）。标记为失败，供 RSI 识别本轮无效。"
+          echo "::error::NO_LIVE_DATA: 本轮采集产出 0 条 LIVE 文档（written=${{ steps.result.outputs.written }}, data_source=${{ steps.result.outputs.data_source }}）。标记为失败，供 RSI 识别本轮无效。"
           exit 1
 
       - uses: actions/upload-artifact@v4
