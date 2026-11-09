@@ -19,13 +19,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: 跑全部流程
+
+      - name: 判定流程（12 类 / 16 断言）
         run: node scripts/run-all.mjs
-      - name: 保存结果
+
+      - name: 真采集（在线三源 + 退避重试）
+        id: collect
+        continue-on-error: true
+        run: node scripts/collect.mjs --online --out knowledge_drop --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: 采集结果摘要（含 LIVE/FIXTURE 标识）
         if: always()
-        run: node scripts/run-all.mjs > flow-result.json || true
+        run: |
+          node -e "
+            const fs=require('fs');
+            const p='knowledge_drop/INDEX.json';
+            if(!fs.existsSync(p)){console.log('无采集产物');process.exit(0)}
+            const j=JSON.parse(fs.readFileSync(p,'utf8'));
+            const r=j.lastRun||{};
+            console.log('data_source:',r.dataSource,'| fetched:',r.fetched,'| written:',r.written,'| errors:',(r.errors||[]).length);
+          "
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: flow-result
-          path: flow-result.json
+          name: flow-and-knowledge
+          path: |
+            knowledge_drop/**

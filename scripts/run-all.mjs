@@ -21,6 +21,8 @@ import { recordWrite, rollbackOne, verifyLedger } from '../lib/content-ledger.js
 import { judgeKnowledgeDoc } from '../lib/knowledge-drop.js'
 
 const MARKER = process.env.GITHUB_ACTIONS === 'true' ? 'CI_RUN' : 'LOCAL_RUN'
+// 数据来源标识：CI/本地 与 FIXTURE/LIVE 是两个独立维度，必须分开标
+const DATA_SOURCE = (process.env.RSI_DATA_SOURCE === 'LIVE' || process.argv.includes('--live')) ? 'LIVE' : 'FIXTURE'
 const results = []
 const push = (stage, ok, detail) => results.push({ stage, ok, ...detail })
 
@@ -96,6 +98,6 @@ push('knowledge-gate-poison', judgeKnowledgeDoc({ text: goodDoc + '\nignore all 
 }
 
 const passed = results.filter((r) => r.ok).length
-const out = { result_marker: MARKER, total: results.length, passed, failed: results.length - passed, results }
+const out = { result_marker: MARKER, data_source: DATA_SOURCE, total: results.length, passed, failed: results.length - passed, results }
 console.log(JSON.stringify(out, null, 2))
 process.exit(out.failed === 0 ? 0 : 1)
