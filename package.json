@@ -1,0 +1,11 @@
+{
+  "name": "rsi-public-runners",
+  "version": "1.0.0",
+  "description": "RSI 公共流程库：只跑流程、得结果；不含任何本地信息",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "scripts": {
+    "flow": "node scripts/run-all.mjs"
+  }
+}

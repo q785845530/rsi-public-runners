@@ -1,0 +1,31 @@
+name: rsi-public-flow
+
+on:
+  schedule:
+    - cron: '23 6 * * *'    # UTC，避开整点
+  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 跑全部流程
+        run: node scripts/run-all.mjs
+      - name: 保存结果
+        if: always()
+        run: node scripts/run-all.mjs > flow-result.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flow-result
+          path: flow-result.json
