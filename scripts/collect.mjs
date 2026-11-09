@@ -25,12 +25,41 @@ const outDir = arg('--out', join(HERE, '..', 'knowledge_drop'))
 const indexFile = arg('--index', join(outDir, 'INDEX.json'))
 const at = arg('--at', new Date().toISOString())
 const wantOnline = has('--online')
+const focusArg = arg('--focus', 'rsi-self-verification')
+const depthArg = arg('--depth', 'standard')
+const maxItemsArg = Number(arg('--max-items', '30'))
 const wantFixture = has('--fixture')
 if (wantOnline && wantFixture) { console.error('--online 与 --fixture 不能同时使用'); process.exit(2) }
 const mode = wantOnline ? 'online' : (wantFixture ? 'fixture' : 'online')
 
 const UA = 'rsi-collect/1.0 (research metadata collector)'
-const QUERIES = ['recursive self-improvement agent', 'agent skill audit provenance']
+/**
+ * focus 是**缺口类型**，不是自由关键词。
+ * 这个映射决定"补哪个缺口要搜什么"，可审计、可冻结；RSI 只能选枚举，不能自造关键词。
+ */
+export const FOCUS_QUERIES = Object.freeze({
+  'rsi-self-verification': ['self-verification agent invariant', 'agent self-verification taxonomy'],
+  'sandbox-isolation': ['sandbox isolation agent execution', 'process isolation microvm agent'],
+  'self-improving-search': ['descriptive claim extraction nlp', 'abstractive claim mining'],
+  'anti-cheat-verifier': ['verifier gaming detection reward hacking', 'anti-cheat evaluation agent'],
+  'program-synthesis': ['program synthesis agent verification', 'code synthesis correctness agent'],
+})
+// 非法 focus 必须**硬拒绝**，不能静默回落到默认值
+// （实测踩到：自由文本 focus 被静默接受，等于白名单形同虚设）
+const DEPTH_LIMIT = Object.freeze({ shallow: 10, standard: 30, deep: 50 })
+if (!Object.prototype.hasOwnProperty.call(FOCUS_QUERIES, focusArg)) {
+  console.error(JSON.stringify({
+    ok: false, reason: 'ILLEGAL_FOCUS', got: focusArg,
+    allowed: Object.keys(FOCUS_QUERIES),
+  }, null, 2))
+  process.exit(2)
+}
+if (!Object.prototype.hasOwnProperty.call(DEPTH_LIMIT, depthArg)) {
+  console.error(JSON.stringify({ ok: false, reason: 'ILLEGAL_DEPTH', got: depthArg, allowed: Object.keys(DEPTH_LIMIT) }, null, 2))
+  process.exit(2)
+}
+const QUERIES = FOCUS_QUERIES[focusArg]
+const MAX_ITEMS = Math.min(Number.isFinite(maxItemsArg) ? maxItemsArg : 30, DEPTH_LIMIT[depthArg] ?? 30)
 
 /** 指数退避：S2 实测持续 429，重试 3 次仍失败就放弃并记录。 */
 async function fetchWithRetry(url, { tries = 3, baseMs = 800, timeoutMs = 20000 } = {}) {
@@ -147,19 +176,21 @@ const entries = []
 let dataSource = 'LIVE'
 
 if (mode === 'online') {
+  // 每个 query 的配额 = 上限 / query 数，至少 1
+  const perQuery = Math.max(1, Math.ceil(MAX_ITEMS / Math.max(1, QUERIES.length)))
   for (const q of QUERIES) {
     // arXiv
-    const a = await fetchWithRetry(`https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q)}&max_results=5`)
+    const a = await fetchWithRetry(`https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q)}&max_results=${perQuery}`)
     if (a.ok) entries.push(...parseArxiv(a.text).map((e) => ({ ...e, __q: q })))
     else errors.push(...(a.errors ?? ['arxiv:unknown']))
 
     // OpenAlex（S2 的替代源：实测 S2 持续 429，OpenAlex 重试可取）
-    const o = await fetchWithRetry(`https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=5`)
+    const o = await fetchWithRetry(`https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=${perQuery}`)
     if (o.ok) { try { entries.push(...parseOpenAlex(JSON.parse(o.text)).map((e) => ({ ...e, __q: q }))) } catch { errors.push('openalex:parse') } }
     else errors.push(...(o.errors ?? ['openalex:unknown']))
 
     // GitHub
-    const g = await fetchWithRetry(`https://api.github.com/search/repositories?q=${encodeURIComponent(q.replace(/\s+/g, '+'))}&per_page=5`)
+    const g = await fetchWithRetry(`https://api.github.com/search/repositories?q=${encodeURIComponent(q.replace(/\s+/g, '+'))}&per_page=${perQuery}`)
     if (g.ok) { try { entries.push(...parseGithub(JSON.parse(g.text)).map((e) => ({ ...e, __q: q }))) } catch { errors.push('github:parse') } }
     else errors.push(...(g.errors ?? ['github:unknown']))
   }
@@ -177,6 +208,7 @@ if (mode === 'online') {
 const written = []
 let skipped = 0
 for (const e of entries) {
+  if (written.length >= MAX_ITEMS) break
   const fp = createHash('sha256').update(dataSource + '|' + e.source + '|' + e.title).digest('hex').slice(0, 12)
   if (index.entries[fp]) { skipped += 1; continue }
   const name = `${dataSource}-${e.source}-${fp}.md`
@@ -185,7 +217,8 @@ for (const e of entries) {
   written.push(name)
 }
 
-index.lastRun = { at, mode, dataSource, written: written.length, skipped, fetched: entries.length, errors: errors.slice(0, 10) }
+index.lastRun = { at, mode, dataSource, focus: focusArg, depth: depthArg, max_items: MAX_ITEMS,
+  written: written.length, skipped, fetched: entries.length, errors: errors.slice(0, 10) }
 await writeFile(indexFile, JSON.stringify(index, null, 2), 'utf8')
 
 const marker = process.env.GITHUB_ACTIONS === 'true' ? 'CI_RUN' : 'LOCAL_RUN'
@@ -193,6 +226,7 @@ console.log(JSON.stringify({
   ok: written.length > 0 && errors.length === 0,
   result_marker: marker,
   data_source: dataSource,
+  focus: focusArg, depth: depthArg, max_items: MAX_ITEMS,
   at, outDir,
   fetched: entries.length, written: written.length, skipped,
   errors: errors.slice(0, 10),

@@ -1,0 +1,109 @@
+name: knowledge-collect
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: '本轮采集焦点（缺口类型，不是关键词）'
+        type: choice
+        required: true
+        default: 'rsi-self-verification'
+        options:
+          - 'rsi-self-verification'
+          - 'sandbox-isolation'
+          - 'self-improving-search'
+          - 'anti-cheat-verifier'
+          - 'program-synthesis'
+      depth:
+        description: '采集深度'
+        type: choice
+        required: true
+        default: 'standard'
+        options: ['shallow', 'standard', 'deep']
+      max_items:
+        description: '单轮上限（硬上限 50）'
+        type: number
+        required: false
+        default: 30
+  schedule:
+    - cron: '17 6 * * *'   # 保留兜底
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 参数白名单校验（**不把 inputs 拼进命令**）
+        id: params
+        env:
+          FOCUS: ${{ inputs.focus }}
+          DEPTH: ${{ inputs.depth }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+        run: |
+          node -e "
+            const focus = process.env.FOCUS || 'rsi-self-verification';
+            const depth = process.env.DEPTH || 'standard';
+            const raw = Number(process.env.MAX_ITEMS || 30);
+            const FOCI = ['rsi-self-verification','sandbox-isolation','self-improving-search','anti-cheat-verifier','program-synthesis'];
+            const DEPTHS = ['shallow','standard','deep'];
+            if(!FOCI.includes(focus)){console.error('非法 focus:',focus);process.exit(1)}
+            if(!DEPTHS.includes(depth)){console.error('非法 depth:',depth);process.exit(1)}
+            if(!Number.isFinite(raw) || raw < 1 || raw > 50){console.error('max_items 越界:',raw);process.exit(1)}
+            const caps = { shallow: 10, standard: 30, deep: 50 };
+            const maxItems = Math.min(raw, caps[depth]);
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'focus=' + focus + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'depth=' + depth + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'max_items=' + maxItems + '\n');
+            console.log('focus=' + focus, 'depth=' + depth, 'max_items=' + maxItems);
+          "
+
+      - name: 采集（按 focus/depth/max_items）
+        id: collect
+        run: |
+          node scripts/collect.mjs \
+            --online \
+            --out knowledge_drop \
+            --focus "${{ steps.params.outputs.focus }}" \
+            --depth "${{ steps.params.outputs.depth }}" \
+            --max-items "${{ steps.params.outputs.max_items }}" \
+            --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: 读取采集结果
+        id: result
+        if: always()
+        run: |
+          node -e "
+            const fs=require('fs');
+            const p='knowledge_drop/INDEX.json';
+            let written=0, dataSource='UNKNOWN';
+            if(fs.existsSync(p)){
+              const j=JSON.parse(fs.readFileSync(p,'utf8'));
+              const r=j.lastRun||{};
+              written = r.written ?? 0;
+              dataSource = r.dataSource ?? 'UNKNOWN';
+              console.log('data_source:',dataSource,'| written:',written,'| errors:',(r.errors||[]).length);
+            } else { console.log('无采集产物'); }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'written=' + written + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'data_source=' + dataSource + '\n');
+          "
+
+      - name: 硬性闸：0 条 LIVE 数据即失败（信号给 RSI，不要让它以为成功）
+        if: ${{ steps.result.outputs.written == '0' || steps.result.outputs.data_source != 'LIVE' }}
+        run: |
+          echo "::error::本轮采集产出 0 条 LIVE 文档（written=${{ steps.result.outputs.written }}, data_source=${{ steps.result.outputs.data_source }}）。标记为失败，供 RSI 识别本轮无效。"
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: knowledge-drop
+          path: knowledge_drop/**
