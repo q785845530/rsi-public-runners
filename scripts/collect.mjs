@@ -209,7 +209,14 @@ const written = []
 let skipped = 0
 for (const e of entries) {
   if (written.length >= MAX_ITEMS) break
-  const fp = createHash('sha256').update(dataSource + '|' + e.source + '|' + e.title).digest('hex').slice(0, 12)
+  // 指纹**不含 source**：来源是「这条从哪来」，不是「这条是什么」。
+  // 含 source 会让同一份知识在 arXiv 与 OpenAlex 各存一份（实测已发生 4 例，虚增 9.1%）。
+  // 归一：先抽 arXiv ID（两种 URL 形态都要覆盖），抽不到再退回标题。
+  const arxivId = (String(e.url || '') + ' ' + String(e.title || '')).match(/arxiv[./](\d{4}\.\d{4,5})/i)?.[1]
+    || String(e.url || '').match(/\/abs\/(\d{4}\.\d{4,5})/i)?.[1]
+    || null
+  const identity = arxivId ? 'arxiv:' + arxivId : 'title:' + String(e.title || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  const fp = createHash('sha256').update(dataSource + '|' + identity).digest('hex').slice(0, 12)
   if (index.entries[fp]) { skipped += 1; continue }
   const name = `${dataSource}-${e.source}-${fp}.md`
   await writeFile(join(outDir, name), toMarkdown(e, { dataSource, retrievedAt: at }), 'utf8')
