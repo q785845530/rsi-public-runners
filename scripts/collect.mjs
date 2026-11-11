@@ -205,10 +205,12 @@ if (mode === 'online') {
   )
 }
 
-const written = []
+// 写入记录与「实际落盘数」必须分开：前者是写入方的自述，后者是独立读回点。
+// 两者同源时，一旦输出流被截断，计数会同步缩小、差值恒为零（真实事故，见广播 378660889336741888）。
+const writtenNames = []
 let skipped = 0
 for (const e of entries) {
-  if (written.length >= MAX_ITEMS) break
+  if (writtenNames.length >= MAX_ITEMS) break
   // 指纹**不含 source**：来源是「这条从哪来」，不是「这条是什么」。
   // 含 source 会让同一份知识在 arXiv 与 OpenAlex 各存一份（实测已发生 4 例，虚增 9.1%）。
   // 归一：先抽 arXiv ID（两种 URL 形态都要覆盖），抽不到再退回标题。
@@ -221,22 +223,31 @@ for (const e of entries) {
   const name = `${dataSource}-${e.source}-${fp}.md`
   await writeFile(join(outDir, name), toMarkdown(e, { dataSource, retrievedAt: at }), 'utf8')
   index.entries[fp] = { name, at, dataSource, url: e.url }
-  written.push(name)
+  writtenNames.push(name)
 }
 
+// ★ 独立读回点：不信任写入方的自述，直接重新遍历落盘目录数一遍。
+const { readdir } = await import('node:fs/promises')
+const onDisk = (await readdir(outDir)).filter((f) => f.endsWith('.md'))
+const writtenOnDisk = onDisk.length
+const writtenThisRun = writtenNames.filter((n) => onDisk.includes(n)).length
+
 index.lastRun = { at, mode, dataSource, focus: focusArg, depth: depthArg, max_items: MAX_ITEMS,
-  written: written.length, skipped, fetched: entries.length, errors: errors.slice(0, 10) }
+  written: writtenOnDisk, written_this_run: writtenThisRun,
+  skipped, fetched: entries.length, errors: errors.slice(0, 10),
+  count_source: 'readdir(outDir) — 独立读回，不采信写入返回值' }
 await writeFile(indexFile, JSON.stringify(index, null, 2), 'utf8')
 
 const marker = process.env.GITHUB_ACTIONS === 'true' ? 'CI_RUN' : 'LOCAL_RUN'
 console.log(JSON.stringify({
-  ok: written.length > 0 && errors.length === 0,
+  ok: writtenOnDisk > 0 && errors.length === 0,
   result_marker: marker,
   data_source: dataSource,
   focus: focusArg, depth: depthArg, max_items: MAX_ITEMS,
   at, outDir,
-  fetched: entries.length, written: written.length, skipped,
+  fetched: entries.length, written: writtenOnDisk, written_this_run: writtenThisRun, skipped,
+  count_source: 'readdir(outDir) — 独立读回，不采信写入返回值',
   errors: errors.slice(0, 10),
-  files: written.slice(0, 5),
+  files: writtenNames.slice(0, 5),
 }, null, 2))
-process.exit(written.length > 0 ? 0 : 1)
+process.exit(writtenOnDisk > 0 ? 0 : 1)
