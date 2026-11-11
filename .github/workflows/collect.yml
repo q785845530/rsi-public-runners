@@ -68,16 +68,22 @@ jobs:
           node -e "
             const fs=require('fs');
             const p='knowledge_drop/INDEX.json';
-            let written=0, dataSource='UNKNOWN';
+            let written=0, dataSource='UNKNOWN', errors=0, fetched=0, skipped=0;
             if(fs.existsSync(p)){
               const j=JSON.parse(fs.readFileSync(p,'utf8'));
               const r=j.lastRun||{};
               written = r.written || 0;
               dataSource = r.dataSource || 'UNKNOWN';
-              console.log('data_source:',dataSource,'| written:',written,'| errors:',(r.errors||[]).length);
+              errors = (r.errors||[]).length;
+              fetched = r.fetched || 0;
+              skipped = r.skipped || 0;
+              console.log('data_source:',dataSource,'| written:',written,'| fetched:',fetched,'| skipped:',skipped,'| errors:',errors);
             } else { console.log('无采集产物'); }
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'written=' + written + '\n');
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'data_source=' + dataSource + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'errors=' + errors + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'fetched=' + fetched + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'skipped=' + skipped + '\n');
           "
 
       - name: 硬性闸：0 条 LIVE 数据即失败（信号给 RSI）
@@ -85,6 +91,29 @@ jobs:
         run: |
           echo "::error::NO_LIVE_DATA: 本轮产出 0 条 LIVE 文档（written=${{ steps.result.outputs.written }}, data_source=${{ steps.result.outputs.data_source }}）"
           exit 1
+
+      # 可观测性：errors / fetched / skipped 暴露为 step output。
+      # 注意：是否让 errors 非空导致失败，仍是业主未决项（见 rsi-research/github-ci-fix-2026-11-09.md）。
+      # 本步只保证「错误数量不再无人可读」——原先 errors 只被打印、不进任何判据。
+      - name: 采集告警：来源部分失败（不阻断，仅暴露）
+        if: ${{ steps.result.outputs.errors != '0' }}
+        run: |
+          echo "::warning::PARTIAL_SOURCE_FAILURE: 本轮有 ${{ steps.result.outputs.errors }} 个来源失败（fetched=${{ steps.result.outputs.fetched }}, written=${{ steps.result.outputs.written }}, skipped=${{ steps.result.outputs.skipped }}）。errors 未进入放行判据——判据口径待业主决定。"
+
+      - name: 采集概览（写入 job summary）
+        if: always()
+        run: |
+          {
+            echo "### 采集概览"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| data_source | ${{ steps.result.outputs.data_source }} |"
+            echo "| fetched | ${{ steps.result.outputs.fetched }} |"
+            echo "| written | ${{ steps.result.outputs.written }} |"
+            echo "| skipped | ${{ steps.result.outputs.skipped }} |"
+            echo "| errors | ${{ steps.result.outputs.errors }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()
